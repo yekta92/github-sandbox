@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Path inside downloads/ to delete (e.g. images/nginx-latest or file.tar)"
+        description: "Space-separated paths inside downloads/ OR 'everything!'"
         required: true
         type: string
 
@@ -21,48 +21,60 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Validate and delete target
+      - name: Validate and delete targets
         shell: bash
         run: |
           set -euo pipefail
 
-          INPUT_PATH="${{ github.event.inputs.target }}"
           BASE_DIR="downloads"
+          INPUT="${{ github.event.inputs.target }}"
 
-          # Normalize path (remove leading slashes)
-          INPUT_PATH="${INPUT_PATH#/}"
+          echo "Input: $INPUT"
 
-          TARGET_PATH="$BASE_DIR/$INPUT_PATH"
-
-          echo "Requested delete: $TARGET_PATH"
-
-          # 🚫 Safety checks
-          if [[ "$INPUT_PATH" == "" ]]; then
-            echo "❌ Empty input is not allowed"
-            exit 1
+          if [[ ! -d "$BASE_DIR" ]]; then
+            echo "No downloads directory exists"
+            exit 0
           fi
 
-          if [[ "$INPUT_PATH" == "." || "$INPUT_PATH" == ".." ]]; then
-            echo "❌ Invalid path"
-            exit 1
+          # 🚨 FULL WIPE
+          if [[ "$INPUT" == "everything!" ]]; then
+            echo "🔥 Deleting EVERYTHING inside $BASE_DIR"
+            rm -rf "$BASE_DIR"/*
+            exit 0
           fi
 
-          if [[ ! -e "$TARGET_PATH" ]]; then
-            echo "❌ Path does not exist: $TARGET_PATH"
-            exit 1
-          fi
+          # Convert input into array
+          read -ra TARGETS <<< "$INPUT"
 
-          # Extra safety: ensure it's inside downloads/
           REAL_BASE=$(realpath "$BASE_DIR")
-          REAL_TARGET=$(realpath "$TARGET_PATH")
 
-          if [[ "$REAL_TARGET" != "$REAL_BASE"* ]]; then
-            echo "❌ Path escape detected"
-            exit 1
-          fi
+          for ITEM in "${TARGETS[@]}"; do
+            ITEM="${ITEM#/}"  # remove leading slash
+            TARGET_PATH="$BASE_DIR/$ITEM"
 
-          echo "🗑️ Deleting: $REAL_TARGET"
-          rm -rf "$TARGET_PATH"
+            echo "➡️ Processing: $TARGET_PATH"
+
+            if [[ "$ITEM" == "" || "$ITEM" == "." || "$ITEM" == ".." ]]; then
+              echo "❌ Invalid path: $ITEM"
+              continue
+            fi
+
+            if [[ ! -e "$TARGET_PATH" ]]; then
+              echo "⚠️ Not found: $TARGET_PATH (skipped)"
+              continue
+            fi
+
+            REAL_TARGET=$(realpath "$TARGET_PATH")
+
+            # 🔒 Ensure inside downloads/
+            if [[ "$REAL_TARGET" != "$REAL_BASE"* ]]; then
+              echo "❌ Path escape attempt: $ITEM"
+              continue
+            fi
+
+            echo "🗑️ Deleting: $REAL_TARGET"
+            rm -rf "$TARGET_PATH"
+          done
 
       - name: Commit & Push
         shell: bash
@@ -74,7 +86,6 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Stage deletions
           git add -A downloads
 
           if git diff --cached --quiet; then
@@ -87,4 +98,4 @@ jobs:
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
 
-          echo "✅ Deletion committed and pushed"
+          echo "✅ Deletions pushed"
