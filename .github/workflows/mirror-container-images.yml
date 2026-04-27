@@ -1,0 +1,94 @@
+name: Download Container Images & Save to Repo
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  save-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Parse commit message
+        id: parse
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MSG="$(git log -1 --pretty=%B)"
+          echo "Commit message:"
+          printf '%s\n' "$MSG"
+
+          if [[ "$MSG" =~ ^download:[[:space:]]*(.+)$ ]]; then
+            echo "images=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ No download command found in commit message"
+            exit 1
+          fi
+
+      - name: Pull images and save tar archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p downloads
+
+          IMAGES='${{ steps.parse.outputs.images }}'
+
+          for IMAGE in $IMAGES; do
+            SAFE_NAME="${IMAGE//\//_}"
+            SAFE_NAME="${SAFE_NAME//:/_}"
+            SAFE_NAME="${SAFE_NAME//@/_}"
+
+            TAR_FILE="downloads/${SAFE_NAME}.tar"
+
+            echo "⬇️ Processing image: $IMAGE"
+            echo "   Output: $TAR_FILE"
+
+            if command -v docker >/dev/null 2>&1; then
+              echo "Using docker"
+              docker pull "$IMAGE"
+              docker save -o "$TAR_FILE" "$IMAGE"
+            elif command -v podman >/dev/null 2>&1; then
+              echo "Using podman"
+              podman pull "$IMAGE"
+              podman save -o "$TAR_FILE" "$IMAGE"
+            else
+              echo "❌ Neither docker nor podman is available"
+              exit 1
+            fi
+          done
+
+      - name: Commit & Push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
+
+          TOTAL=${#ALL_FILES[@]}
+          echo "📦 Total files to push: $TOTAL"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+
+          git add "${ALL_FILES[@]}"
+          git commit -m "Add downloaded container images [skip ci]"
+
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
