@@ -7,6 +7,7 @@ on:
 
 jobs:
   save-images:
+    if: startsWith(github.event.head_commit.message, 'download:')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -40,8 +41,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p downloads
+          mkdir -p downloads tmp_images
 
+          LIMIT=$((90 * 1024 * 1024))
           IMAGES='${{ steps.parse.outputs.images }}'
 
           for IMAGE in $IMAGES; do
@@ -49,26 +51,47 @@ jobs:
             SAFE_NAME="${SAFE_NAME//:/_}"
             SAFE_NAME="${SAFE_NAME//@/_}"
 
-            TAR_FILE="downloads/${SAFE_NAME}.tar"
+            TMP_TAR="tmp_images/${SAFE_NAME}.tar"
 
             echo "⬇️ Processing image: $IMAGE"
-            echo "   Output: $TAR_FILE"
+            echo "   Temp tar: $TMP_TAR"
 
             if command -v docker >/dev/null 2>&1; then
               echo "Using docker"
               docker pull "$IMAGE"
-              docker save -o "$TAR_FILE" "$IMAGE"
+              docker save -o "$TMP_TAR" "$IMAGE"
             elif command -v podman >/dev/null 2>&1; then
               echo "Using podman"
               podman pull "$IMAGE"
-              podman save -o "$TAR_FILE" "$IMAGE"
+              podman save -o "$TMP_TAR" "$IMAGE"
             else
               echo "❌ Neither docker nor podman is available"
               exit 1
             fi
+
+            SIZE=$(stat -c%s "$TMP_TAR")
+            echo "   Tar size: $(( SIZE / 1024 / 1024 )) MB"
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ Splitting ${SAFE_NAME}.tar into 90MB parts"
+
+              split -b 90m -d -a 3 \
+                "$TMP_TAR" \
+                "downloads/${SAFE_NAME}.tar.part-"
+
+              rm -f "$TMP_TAR"
+
+              echo "✅ Split parts created:"
+              ls -1 "downloads/${SAFE_NAME}.tar.part-"* || true
+            else
+              mv "$TMP_TAR" "downloads/${SAFE_NAME}.tar"
+              echo "✅ Saved without splitting"
+            fi
           done
 
-      - name: Commit & Push
+          rm -rf tmp_images
+
+      - name: Commit & Push in batches
         shell: bash
         run: |
           set -euo pipefail
@@ -77,7 +100,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
+          mapfile -t ALL_FILES < <(find downloads -type f | sort)
 
           TOTAL=${#ALL_FILES[@]}
           echo "📦 Total files to push: $TOTAL"
@@ -87,8 +110,22 @@ jobs:
             exit 0
           fi
 
-          git add "${ALL_FILES[@]}"
-          git commit -m "Add downloaded container images [skip ci]"
+          BATCH_SIZE=5
+          BATCH_NUM=0
 
-          git pull --rebase origin "$BRANCH"
-          git push origin HEAD:"$BRANCH"
+          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
+            BATCH_NUM=$((BATCH_NUM + 1))
+            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
+
+            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+
+            git add -- "${BATCH[@]}"
+            git commit -m "Add downloaded container images — batch $BATCH_NUM [skip ci]"
+
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+
+            echo "✅ Batch $BATCH_NUM pushed"
+          done
+
+          echo "🎉 All $TOTAL files pushed in $BATCH_NUM batch(es)"
