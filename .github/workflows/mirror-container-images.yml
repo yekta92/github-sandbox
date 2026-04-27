@@ -41,27 +41,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p downloads tmp_images
+          BASE_DIR="downloads/images"
+          TMP_DIR="tmp_images"
+          mkdir -p "$BASE_DIR" "$TMP_DIR"
 
           LIMIT=$((90 * 1024 * 1024))
           IMAGES='${{ steps.parse.outputs.images }}'
 
           for IMAGE in $IMAGES; do
-            SAFE_NAME="${IMAGE//\//_}"
-            SAFE_NAME="${SAFE_NAME//:/_}"
-            SAFE_NAME="${SAFE_NAME//@/_}"
+            # Normalize image name → safe folder
+            SAFE_NAME=$(echo "$IMAGE" | sed 's/[^a-zA-Z0-9._-]/-/g')
 
-            TMP_TAR="tmp_images/${SAFE_NAME}.tar"
+            IMAGE_DIR="$BASE_DIR/$SAFE_NAME"
+            mkdir -p "$IMAGE_DIR"
+
+            TMP_TAR="$TMP_DIR/${SAFE_NAME}.tar"
 
             echo "⬇️ Processing image: $IMAGE"
-            echo "   Temp tar: $TMP_TAR"
+            echo "   Folder: $IMAGE_DIR"
 
             if command -v docker >/dev/null 2>&1; then
-              echo "Using docker"
               docker pull "$IMAGE"
               docker save -o "$TMP_TAR" "$IMAGE"
             elif command -v podman >/dev/null 2>&1; then
-              echo "Using podman"
               podman pull "$IMAGE"
               podman save -o "$TMP_TAR" "$IMAGE"
             else
@@ -70,26 +72,26 @@ jobs:
             fi
 
             SIZE=$(stat -c%s "$TMP_TAR")
-            echo "   Tar size: $(( SIZE / 1024 / 1024 )) MB"
+            echo "   Size: $(( SIZE / 1024 / 1024 )) MB"
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ Splitting ${SAFE_NAME}.tar into 90MB parts"
+              echo "✂️ Splitting into 90MB parts"
 
               split -b 90m -d -a 3 \
                 "$TMP_TAR" \
-                "downloads/${SAFE_NAME}.tar.part-"
+                "$IMAGE_DIR/${SAFE_NAME}.tar.part-"
 
               rm -f "$TMP_TAR"
 
-              echo "✅ Split parts created:"
-              ls -1 "downloads/${SAFE_NAME}.tar.part-"* || true
+              echo "✅ Parts:"
+              ls -1 "$IMAGE_DIR"
             else
-              mv "$TMP_TAR" "downloads/${SAFE_NAME}.tar"
+              mv "$TMP_TAR" "$IMAGE_DIR/${SAFE_NAME}.tar"
               echo "✅ Saved without splitting"
             fi
           done
 
-          rm -rf tmp_images
+          rm -rf "$TMP_DIR"
 
       - name: Commit & Push in batches
         shell: bash
@@ -100,7 +102,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          mapfile -t ALL_FILES < <(find downloads -type f | sort)
+          mapfile -t ALL_FILES < <(find downloads/images -type f | sort)
 
           TOTAL=${#ALL_FILES[@]}
           echo "📦 Total files to push: $TOTAL"
@@ -117,15 +119,15 @@ jobs:
             BATCH_NUM=$((BATCH_NUM + 1))
             BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
 
-            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+            echo "🚀 Batch $BATCH_NUM: $((i+1))–$(( i + ${#BATCH[@]} ))"
 
             git add -- "${BATCH[@]}"
-            git commit -m "Add downloaded container images — batch $BATCH_NUM [skip ci]"
+            git commit -m "Add images — batch $BATCH_NUM [skip ci]"
 
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
 
-            echo "✅ Batch $BATCH_NUM pushed"
+            echo "✅ Done batch $BATCH_NUM"
           done
 
-          echo "🎉 All $TOTAL files pushed in $BATCH_NUM batch(es)"
+          echo "🎉 All files pushed"
