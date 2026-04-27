@@ -1,13 +1,19 @@
 name: Download from Commit & Save to Repo
+
 on:
   push:
     branches:
       - "**"
+
 jobs:
   save-file:
+    if: |
+      startsWith(github.event.head_commit.message, 'download:') ||
+      startsWith(github.event.head_commit.message, 'download-zip:')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,14 +28,14 @@ jobs:
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
 
-          if echo "$MSG" | grep -qP 'download-zip:'; then
+          if echo "$MSG" | grep -qP '^download-zip:'; then
             MODE="zip"
-            URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
-          elif echo "$MSG" | grep -qP 'download:'; then
+            URL_LINE=$(echo "$MSG" | grep -oP '^download-zip:\s*\K.*')
+          elif echo "$MSG" | grep -qP '^download:'; then
             MODE="normal"
-            URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
+            URL_LINE=$(echo "$MSG" | grep -oP '^download:\s*\K.*')
           else
-            echo "❌ No download command found in commit message"
+            echo "❌ No valid download command found"
             exit 1
           fi
 
@@ -53,7 +59,7 @@ jobs:
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
           fi
 
-          # Split any file over 90MB using zip native split (unzip compatible)
+          # Split any file over 90MB
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -61,8 +67,7 @@ jobs:
             BASENAME=$(basename "$FILE")
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
-              # zip -s creates: file.zip, file.z01, file.z02, ...
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting..."
               zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
               echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
             else
@@ -78,7 +83,6 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Collect all new/untracked files under downloads/
           mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
 
           TOTAL=${#ALL_FILES[@]}
@@ -101,7 +105,6 @@ jobs:
             git add "${BATCH[@]}"
             git commit -m "Add downloaded files — batch $BATCH_NUM [skip ci]"
 
-            # Pull with rebase before each push to avoid conflicts from prior batches
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
 
