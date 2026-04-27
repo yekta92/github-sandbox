@@ -7,7 +7,7 @@ on:
 
 jobs:
   save-images:
-    if: startsWith(github.event.head_commit.message, 'download:')
+    if: startsWith(github.event.head_commit.message, 'dl-image:')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,10 +29,10 @@ jobs:
           echo "Commit message:"
           printf '%s\n' "$MSG"
 
-          if [[ "$MSG" =~ ^download:[[:space:]]*(.+)$ ]]; then
+          if [[ "$MSG" =~ ^dl-image:[[:space:]]*(.+)$ ]]; then
             echo "images=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           else
-            echo "❌ No download command found in commit message"
+            echo "❌ No dl-image command found"
             exit 1
           fi
 
